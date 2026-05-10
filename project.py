@@ -1,37 +1,11 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-from datetime import timedelta
 from openpyxl import load_workbook
 
-FILE_PATH = "tracker.xlsx"
+FILE_PATH = "Resource Tracker_New (1).xlsm"
 
 # =========================
-# LOAD NAME MANAGER LISTS
-# =========================
-def load_named_range(name):
-    wb = load_workbook(FILE_PATH, data_only=True)
-    dn = wb.defined_names[name]
-
-    values = []
-    for sheet, coord in dn.destinations:
-        ws = wb[sheet]
-        for row in ws[coord]:
-            for cell in row:
-                if cell.value is not None:
-                    values.append(cell.value)
-    return values
-
-@st.cache_data
-def load_lists():
-    names = load_named_range("NameList")
-    codes = load_named_range("CodeList")
-    teams = load_named_range("TeamClientList")
-    holidays = set(pd.to_datetime(load_named_range("Holidays")).date)
-    return names, codes, teams, holidays
-
-# =========================
-# LOAD SHEETS
+# LOAD DATA
 # =========================
 @st.cache_data
 def load_data():
@@ -40,232 +14,345 @@ def load_data():
     resources = pd.read_excel(FILE_PATH, sheet_name="RESOURCES")
     return movement, lifecycle, resources
 
+
+def load_named_range(name):
+    wb = load_workbook(FILE_PATH, data_only=True)
+    rng = wb.defined_names[name]
+
+    values = []
+    for sheet, coord in rng.destinations:
+        ws = wb[sheet]
+        for row in ws[coord]:
+            if isinstance(row, tuple):
+                values.extend([c.value for c in row])
+            else:
+                values.append(row.value)
+
+    return values
+
+
+@st.cache_data
+def load_lists():
+    names = load_named_range("NameList")
+    holidays = set(pd.to_datetime(load_named_range("Holidays")).date)
+    return names, holidays
+
+
 # =========================
-# SESSION HANDLING
+# CLEAN VALUES
 # =========================
-def normalize_sessions(df):
-    session_map = {"AM": 0, "PM": 1}
+def clean_team(val):
+    if val is None or pd.isna(val) or str(val).strip() == "":
+        return "Blank"
+    return str(val)
 
-    df["Start Session"] = (
-        df["Start Session"].astype(str).str.strip().str.upper().map(session_map)
-    )
-    df["End Session"] = (
-        df["End Session"].astype(str).str.strip().str.upper().map(session_map)
-    )
 
-    df["Start Session"] = df["Start Session"].fillna(0).astype(int)
-    df["End Session"] = df["End Session"].fillna(1).astype(int)
+# =========================
+# PREPARE MOVEMENT
+# =========================
+def prepare_movement(df):
+    df = df.copy()
 
-    df["Start Date"] = pd.to_datetime(df["Start Date"])
-    df["End Date"] = pd.to_datetime(df["End Date"])
+    df["START DATE"] = pd.to_datetime(df["START DATE"])
+    df["END DATE"] = pd.to_datetime(df["END DATE"])
 
-    df["start_dt"] = df["Start Date"] + pd.to_timedelta(df["Start Session"] * 12, unit="h")
-    df["end_dt"] = df["End Date"] + pd.to_timedelta(df["End Session"] * 12, unit="h")
+    # open-ended TEMP logs
+    df["END DATE"] = df["END DATE"].fillna(pd.Timestamp("2100-01-01"))
+
+    df["DESTINATION TEAM/CLIENT"] = df["DESTINATION TEAM/CLIENT"].apply(clean_team)
 
     return df
 
-# =========================
-# BUILD TIMELINE
-# =========================
-def build_timeline(start_date, end_date):
-    days = pd.date_range(start_date, end_date, freq="D")
-    timeline = []
-    for d in days:
-        timeline.append(d)
-        timeline.append(d + pd.Timedelta(hours=12))
-    return timeline
 
 # =========================
-# CURRENT DESIGNATION
+# SPLIT CORE / TEMP
 # =========================
-def get_current_designation(name, lifecycle, ref_date):
-    df = lifecycle[lifecycle["Name"] == name].copy()
-    df["Effective Date"] = pd.to_datetime(df["Effective Date"])
+def split_core_temp(df):
+    core = df[df["ASSIGNMENT TYPE"] == "PERMANENT"].copy()
+    temp = df[df["ASSIGNMENT TYPE"] == "TEMPORARY"].copy()
+    return core, temp
 
-    df = df[df["Effective Date"] <= ref_date]
-
-    if df.empty:
-        return None
-
-    df = df.sort_values("Effective Date")
-    return df.iloc[-1]["Designation"]
 
 # =========================
-# CURRENT CORE TEAM
+# BUILD TEMP INTERVALS
 # =========================
-def get_core_team(name, movement, ref_dt):
-    df = movement[movement["Name"] == name].copy()
-    df = normalize_sessions(df)
+def build_temp_intervals(temp_rows):
+    temp_rows = temp_rows.sort_values("START DATE")
 
-    df = df[df["start_dt"] <= ref_dt]
+    intervals = []
 
-    if df.empty:
-        return None
+    for _, row in temp_rows.iterrows():
+        start = row["START DATE"]
+        end = row["END DATE"]
+        team = clean_team(row["DESTINATION TEAM/CLIENT"])
 
-    df = df.sort_values("start_dt")
-    return df.iloc[-1]["Destination Team"]
+        next_rows = temp_rows[temp_rows["START DATE"] > start]
+
+        if not next_rows.empty:
+            next_start = next_rows.iloc[0]["START DATE"]
+            end = min(end, next_start)
+
+        intervals.append((start, end, team))
+
+    return intervals
+
 
 # =========================
-# TIMELINE PER EMPLOYEE
+# RESOLVE EMPLOYEE TIMELINE
 # =========================
-def build_employee_timeline(name, movement, timeline):
-    df = movement[movement["Name"] == name].copy()
-    df = normalize_sessions(df)
+def resolve_employee(name, movement, timeline):
+    movement = prepare_movement(movement)
+    core_df, temp_df = split_core_temp(movement)
+
+    core_rows = core_df[core_df["NAME"] == name]
+    temp_rows = temp_df[temp_df["NAME"] == name]
+
+    if core_rows.empty:
+        return ["Blank"] * len(timeline)
+
+    core_team = clean_team(core_rows.iloc[-1]["DESTINATION TEAM/CLIENT"])
+
+    temp_intervals = build_temp_intervals(temp_rows)
 
     result = []
 
     for t in timeline:
-        team = None
+        active = None
 
-        for _, row in df.iterrows():
-            if row["start_dt"] <= t <= row["end_dt"]:
-                team = row["Destination Team"]
+        for start, end, team in temp_intervals:
+            if start <= t <= end:
+                active = team
+                break
 
-        result.append(team)
+        result.append(active if active else core_team)
 
     return result
 
+
 # =========================
-# COLOR MAP
+# GET CORE TEAM ONLY
 # =========================
-def generate_colors(values):
+def get_core_team(name, movement):
+    movement = prepare_movement(movement)
+    core_df, _ = split_core_temp(movement)
+
+    core_rows = core_df[core_df["NAME"] == name]
+
+    if core_rows.empty:
+        return None
+
+    return clean_team(core_rows.iloc[-1]["DESTINATION TEAM/CLIENT"])
+
+
+# =========================
+# TIMELINE
+# =========================
+def build_timeline(start_date, end_date):
+    return pd.date_range(start_date, end_date, freq="D")
+
+
+# =========================
+# COLORS
+# =========================
+def generate_color_map(values):
     palette = [
-        "#1f77b4","#ff7f0e","#2ca02c","#d62728",
-        "#9467bd","#8c564b","#e377c2","#7f7f7f"
+        "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728",
+        "#9467bd", "#8c564b", "#e377c2", "#7f7f7f",
+        "#bcbd22", "#17becf"
     ]
-    unique = list(set(values))
+
+    unique = sorted(set(values))
+
     return {v: palette[i % len(palette)] for i, v in enumerate(unique)}
 
-# =========================
-# RENDER GRID
-# =========================
-def render_grid(df, timeline, holidays):
-
-    styled = pd.DataFrame(index=df.index, columns=timeline)
-
-    for r in df.index:
-        for t in timeline:
-            day = t.date()
-
-            if day.weekday() >= 5 or day in holidays:
-                styled.loc[r, t] = "background-color: black"
-            else:
-                val = df.loc[r, t]
-                color = df.attrs["colors"].get(val, "#ffffff")
-                styled.loc[r, t] = f"background-color: {color}"
-
-    st.dataframe(df.style.apply(lambda _: styled, axis=None), use_container_width=True)
 
 # =========================
-# MAIN
+# HTML TABLE
+# =========================
+def render_colored_table(df, color_map):
+    html = """
+    <style>
+        table { border-collapse: collapse; font-size: 12px; }
+        td, th { border: 1px solid #ddd; padding: 4px; text-align: center; }
+    </style>
+    <table>
+    """
+
+    html += "<tr><th>Employee</th>"
+
+    for col in df.columns:
+        html += f"<th>{col.strftime('%Y-%m-%d')}</th>"
+
+    html += "</tr>"
+
+    for idx, row in df.iterrows():
+        html += f"<tr><td><b>{idx}</b></td>"
+
+        for val in row:
+            val = clean_team(val)
+            color = color_map.get(val, "#ffffff")
+            html += f"<td style='background-color:{color}'>{val}</td>"
+
+        html += "</tr>"
+
+    html += "</table>"
+
+    st.markdown(html, unsafe_allow_html=True)
+
+
+# =========================
+# LEGEND
+# =========================
+def render_legend(color_map):
+    st.sidebar.subheader("Legend")
+
+    for key, color in color_map.items():
+        st.sidebar.markdown(
+            f"<div style='display:flex;align-items:center;margin-bottom:5px;'>"
+            f"<div style='width:14px;height:14px;background:{color};margin-right:8px;'></div>"
+            f"{key}</div>",
+            unsafe_allow_html=True
+        )
+
+
+# =========================
+# MAIN APP
 # =========================
 movement, lifecycle, resources = load_data()
-names, codes, teams, holidays = load_lists()
+names, holidays = load_lists()
 
-st.title("Workforce Timeline")
+st.title("Workforce Timeline System")
 
-mode = st.selectbox("Mode", ["A", "B", "C"])
+mode = st.selectbox("Mode", ["A", "D"])
 
-start_date = st.date_input("Start Date")
-end_date = st.date_input("End Date")
+start_date = st.date_input("START DATE")
+end_date = st.date_input("END DATE")
 
 timeline = build_timeline(start_date, end_date)
 
 # =========================
-# A: EMPLOYEE VIEW
+# MODE A: EMPLOYEE VIEW
 # =========================
 if mode == "A":
-    name_input = st.text_input("Name (partial)")
+    name_input = st.text_input("Employee Search")
 
-    matched = [n for n in names if name_input.lower() in n.lower()]
+    matched = [
+        n for n in names
+        if isinstance(n, str) and name_input.lower() in n.lower()
+    ]
 
     data = {}
-    all_vals = []
 
     for emp in matched:
-        vals = build_employee_timeline(emp, movement, timeline)
-        data[emp] = vals
-        all_vals.extend([v for v in vals if v])
+        data[emp] = resolve_employee(emp, movement, timeline)
 
     if data:
         df = pd.DataFrame(data, index=timeline).T
-        df.attrs["colors"] = generate_colors(all_vals)
 
-        render_grid(df, timeline, holidays)
+        all_values = []
+        for row in data.values():
+            all_values.extend([v for v in row])
 
-        info = []
-        for emp in matched:
-            designation = get_current_designation(emp, lifecycle, end_date)
-            core = get_core_team(emp, movement, timeline[-1])
-            role = resources.loc[resources["Name"] == emp, "CURRENT ROLE"]
+        color_map = generate_color_map(all_values)
 
-            role = role.iloc[0] if len(role) else None
-
-            info.append([emp, designation, role, core])
-
-        st.write(pd.DataFrame(info, columns=["Name","Designation","Role","Core Team"]))
+        st.subheader("Employee Timeline")
+        render_colored_table(df, color_map)
+        render_legend(color_map)
 
 # =========================
-# B: CORE TEAM VIEW
+# MODE D: TEAM → EMPLOYEES
 # =========================
-elif mode == "B":
-    team = st.text_input("Team (exact)")
+elif mode == "D":
+    team_input = st.text_input("Team / Client Name")
 
-    ref_dt = timeline[-1]
+    if team_input:
 
-    members = []
-    for n in names:
-        if get_core_team(n, movement, ref_dt) == team:
-            members.append(n)
+        team_input = team_input.strip()
 
-    def build(group):
-        data = {}
-        vals = []
+        # =========================
+        # FIND EMPLOYEES BY CORE TEAM
+        # =========================
+        matched = []
 
-        for emp in group:
-            row = build_employee_timeline(emp, movement, timeline)
-            data[emp] = row
-            vals.extend([v for v in row if v])
+        for emp in names:
+            if not isinstance(emp, str):
+                continue
 
-        df = pd.DataFrame(data, index=timeline).T
-        df.attrs["colors"] = generate_colors(vals)
-        return df
+            core_team = get_core_team(emp, movement)
 
-    pl = [n for n in members if resources.loc[resources["Name"] == n, "CURRENT ROLE"].iloc[0] == "PL"]
-    pa = [n for n in members if resources.loc[resources["Name"] == n, "CURRENT ROLE"].iloc[0] == "PA"]
+            if core_team == team_input:
+                matched.append(emp)
 
-    if pl:
-        st.subheader("PL")
-        render_grid(build(pl), timeline, holidays)
+        st.subheader(f"Team Timeline: {team_input}")
 
-    if pa:
-        st.subheader("PA")
-        render_grid(build(pa), timeline, holidays)
+        if not matched:
+            st.warning("No employees found for this team/client.")
+        else:
 
-# =========================
-# C: PARTICIPATION VIEW
-# =========================
-elif mode == "C":
-    team = st.text_input("Team (exact)")
+            # =========================
+            # SPLIT BY ROLE (PL / PA)
+            # =========================
+            pl_list = []
+            pa_list = []
 
-    def build(group):
-        data = {}
+            for emp in matched:
+                role = resources.loc[resources["NAME"] == emp, "CURRENT PROD ROLE"]
+                role = role.iloc[0] if not role.empty else None
 
-        for emp in group:
-            row = build_employee_timeline(emp, movement, timeline)
-            data[emp] = [1 if v == team else 0 for v in row]
+                if role == "PL":
+                    pl_list.append(emp)
+                elif role == "PA":
+                    pa_list.append(emp)
 
-        return pd.DataFrame(data, index=timeline).T
+            # =========================
+            # FUNCTION TO BUILD TABLE
+            # =========================
+            def build_table(group):
+                data = {}
 
-    involved = movement[movement["Destination Team"] == team]["Name"].unique()
+                for emp in group:
+                    data[emp] = resolve_employee(emp, movement, timeline)
 
-    pl = [n for n in involved if resources.loc[resources["Name"] == n, "CURRENT ROLE"].iloc[0] == "PL"]
-    pa = [n for n in involved if resources.loc[resources["Name"] == n, "CURRENT ROLE"].iloc[0] == "PA"]
+                if not data:
+                    return None, None
 
-    if pl:
-        st.subheader("PL Participation")
-        st.line_chart(build(pl).T)
+                df = pd.DataFrame(data, index=timeline).T
 
-    if pa:
-        st.subheader("PA Participation")
-        st.line_chart(build(pa).T)
+                all_values = []
+                for row in data.values():
+                    all_values.extend([v for v in row])
+
+                color_map = generate_color_map(all_values)
+
+                return df, color_map
+
+            # =========================
+            # PL TABLE
+            # =========================
+            if pl_list:
+                st.subheader("PL")
+
+                df_pl, color_map_pl = build_table(pl_list)
+
+                if df_pl is not None:
+                    render_colored_table(df_pl, color_map_pl)
+                    render_legend(color_map_pl)
+
+            # =========================
+            # PA TABLE
+            # =========================
+            if pa_list:
+                st.subheader("PA")
+
+                df_pa, color_map_pa = build_table(pa_list)
+
+                if df_pa is not None:
+                    render_colored_table(df_pa, color_map_pa)
+                    render_legend(color_map_pa)
+
+            # =========================
+            # SUMMARY LIST (OPTIONAL)
+            # =========================
+            st.subheader("Employees in Team")
+
+            st.dataframe(pd.DataFrame(matched, columns=["EMPLOYEES"]))
