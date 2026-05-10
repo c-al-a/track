@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from openpyxl import load_workbook
 
-FILE_PATH = "Resource Tracker_New (1).xlsm"
+FILE_PATH = "tracker.xlsx"
 
 # =========================
 # LOAD DATA
@@ -156,9 +156,21 @@ def build_timeline(start_date, end_date):
 # =========================
 def generate_color_map(values):
     palette = [
-        "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728",
-        "#9467bd", "#8c564b", "#e377c2", "#7f7f7f",
-        "#bcbd22", "#17becf"
+        "#dbeafe",  # light blue
+        "#ffedd5",  # light orange
+        "#dcfce7",  # light green
+        "#fee2e2",  # light red
+        "#ede9fe",  # light purple
+        "#f3e8e2",  # light brown
+        "#fce7f3",  # light pink
+        "#e5e7eb",  # light gray
+        "#fef9c3",  # light yellow
+        "#cffafe",  # light cyan
+        "#fde68a",  # soft amber
+        "#ddd6fe",  # lavender
+        "#bfdbfe",  # sky blue
+        "#fecaca",  # rose
+        "#bbf7d0"   # mint
     ]
 
     unique = sorted(set(values))
@@ -223,7 +235,7 @@ names, holidays = load_lists()
 
 st.title("Workforce Timeline System")
 
-mode = st.selectbox("Mode", ["A", "D"])
+mode = st.selectbox("Mode", ["EMPLOYEE", "CORE TEAM/CLIENT"])
 
 start_date = st.date_input("START DATE")
 end_date = st.date_input("END DATE")
@@ -233,7 +245,7 @@ timeline = build_timeline(start_date, end_date)
 # =========================
 # MODE A: EMPLOYEE VIEW
 # =========================
-if mode == "A":
+if mode == "EMPLOYEE":
     name_input = st.text_input("Employee Search")
 
     matched = [
@@ -260,9 +272,9 @@ if mode == "A":
         render_legend(color_map)
 
 # =========================
-# MODE D: TEAM → EMPLOYEES
+# MODE B: TEAM → EMPLOYEES
 # =========================
-elif mode == "D":
+elif mode == "CORE TEAM/CLIENT":
     team_input = st.text_input("Team / Client Name")
 
     if team_input:
