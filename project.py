@@ -299,7 +299,7 @@ names, holidays = load_lists()
 
 st.title("Workforce Timeline System")
 
-mode = st.selectbox("Mode", ["A", "D"])
+mode = st.selectbox("Mode", ["A", "D", "E"])
 
 start_date = st.date_input("START DATE")
 end_date = st.date_input("END DATE")
@@ -435,3 +435,55 @@ elif mode == "D":
             st.subheader("Employees in Team")
 
             st.dataframe(pd.DataFrame(matched, columns=["EMPLOYEES"]))
+
+elif mode == "E":
+    st.subheader("Team Exposure (Historical Assignment View)")
+
+    team_options = sorted(movement["DESTINATION TEAM/CLIENT"].dropna().unique())
+    team_input = st.selectbox("Team / Client Name", team_options)
+
+    start_date = st.date_input("START DATE")
+    end_date = st.date_input("END DATE")
+
+    window_start = pd.to_datetime(start_date)
+    window_end = pd.to_datetime(end_date)
+
+    matched = []
+
+    for emp in names:
+        if not isinstance(emp, str):
+            continue
+
+        emp_movement = movement[movement["NAME"] == emp]
+        if emp_movement.empty:
+            continue
+
+        emp_movement = prepare_movement(emp_movement)
+        core_df, temp_df = split_core_temp(emp_movement)
+
+        # filter only rows for selected team
+        temp_rows = temp_df[temp_df["DESTINATION TEAM/CLIENT"] == team_input]
+
+        if temp_rows.empty:
+            continue
+
+        intervals = build_temp_intervals(temp_rows)
+
+        found = False
+
+        for start, end, team in intervals:
+            # overlap check
+            if start <= window_end and end >= window_start:
+                matched.append(emp)
+                found = True
+                break
+
+    matched = sorted(set(matched))
+
+    if matched:
+        st.success(f"{len(matched)} employees found")
+
+        result_df = pd.DataFrame(matched, columns=["EMPLOYEES"])
+        st.dataframe(result_df, use_container_width=True)
+    else:
+        st.warning("No employees found for this team in the selected date range.")
