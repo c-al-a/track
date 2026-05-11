@@ -439,7 +439,12 @@ elif mode == "D":
 elif mode == "E":
     st.subheader("Team Exposure (Historical Assignment View)")
 
-    team_options = sorted(movement["DESTINATION TEAM/CLIENT"].dropna().unique())
+    # =========================
+    # TEAM DROPDOWN (FIXED)
+    # =========================
+    team_options = sorted(
+        prepare_movement(movement)["DESTINATION TEAM/CLIENT"].dropna().unique()
+    )
     team_input = st.selectbox("Team / Client Name", team_options)
 
     start_date = st.date_input("START DATE")
@@ -450,6 +455,9 @@ elif mode == "E":
 
     matched = []
 
+    # =========================
+    # FIND EMPLOYEES WITH ANY OVERLAP
+    # =========================
     for emp in names:
         if not isinstance(emp, str):
             continue
@@ -461,7 +469,7 @@ elif mode == "E":
         emp_movement = prepare_movement(emp_movement)
         core_df, temp_df = split_core_temp(emp_movement)
 
-        # filter only rows for selected team
+        # only rows for selected team
         temp_rows = temp_df[temp_df["DESTINATION TEAM/CLIENT"] == team_input]
 
         if temp_rows.empty:
@@ -469,21 +477,46 @@ elif mode == "E":
 
         intervals = build_temp_intervals(temp_rows)
 
-        found = False
-
         for start, end, team in intervals:
-            # overlap check
             if start <= window_end and end >= window_start:
                 matched.append(emp)
-                found = True
                 break
 
     matched = sorted(set(matched))
 
-    if matched:
+    # =========================
+    # ROLE SPLIT (PL / PA)
+    # =========================
+    pl_list = []
+    pa_list = []
+
+    for emp in matched:
+        role = resources.loc[resources["NAME"] == emp, "CURRENT PROD ROLE"]
+        role = role.iloc[0] if not role.empty else None
+
+        if role == "PL":
+            pl_list.append(emp)
+        elif role == "PA":
+            pa_list.append(emp)
+
+    # =========================
+    # DISPLAY RESULTS
+    # =========================
+    if not matched:
+        st.warning("No employees found for this team in the selected date range.")
+    else:
         st.success(f"{len(matched)} employees found")
 
-        result_df = pd.DataFrame(matched, columns=["EMPLOYEES"])
-        st.dataframe(result_df, use_container_width=True)
-    else:
-        st.warning("No employees found for this team in the selected date range.")
+        if pl_list:
+            st.subheader("PL")
+            st.dataframe(
+                pd.DataFrame(sorted(pl_list), columns=["EMPLOYEES"]),
+                use_container_width=True
+            )
+
+        if pa_list:
+            st.subheader("PA")
+            st.dataframe(
+                pd.DataFrame(sorted(pa_list), columns=["EMPLOYEES"]),
+                use_container_width=True
+            )
