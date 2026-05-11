@@ -317,7 +317,7 @@ if mode == "A":
         data[emp] = resolve_employee(emp, movement, timeline, holidays, leaves)
 
     if data:
-        df = pd.DataFrame(data, index=timeline).T
+        df = df = df.sort_index(key=lambda x: x.str.lower())
 
         all_values = []
         for row in data.values():
@@ -386,7 +386,7 @@ elif mode == "D":
                 if not data:
                     return None, None
 
-                df = pd.DataFrame(data, index=timeline).T
+                df = df = df.sort_index(key=lambda x: x.str.lower())
 
                 all_values = []
                 for row in data.values():
