@@ -83,6 +83,12 @@ def split_core_temp(df):
     core = df[df["ASSIGNMENT TYPE"] == "PERMANENT"].copy()
     temp = df[df["ASSIGNMENT TYPE"] == "TEMPORARY"].copy()
     return core, temp
+    
+def get_all_core_teams(movement):
+    movement = prepare_movement(movement)
+    core_df, _ = split_core_temp(movement)
+
+    return sorted(core_df["DESTINATION TEAM/CLIENT"].dropna().unique())
 
 
 # =========================
@@ -317,7 +323,8 @@ if mode == "A":
         data[emp] = resolve_employee(emp, movement, timeline, holidays, leaves)
 
     if data:
-        df = df = df.sort_index(key=lambda x: x.str.lower())
+        df = pd.DataFrame(data, index=timeline).T
+        df = df.sort_index()
 
         all_values = []
         for row in data.values():
@@ -333,7 +340,8 @@ if mode == "A":
 # MODE D: TEAM → EMPLOYEES
 # =========================
 elif mode == "D":
-    team_input = st.text_input("Team / Client Name")
+    team_options = get_all_core_teams(movement)
+    team_input = st.selectbox("Team / Client Name", team_options)
 
     if team_input:
 
@@ -386,7 +394,8 @@ elif mode == "D":
                 if not data:
                     return None, None
 
-                df = df = df.sort_index(key=lambda x: x.str.lower())
+                df = pd.DataFrame(data, index=timeline).T
+                df = df.sort_index()
 
                 all_values = []
                 for row in data.values():
