@@ -437,27 +437,27 @@ elif mode == "D":
             st.dataframe(pd.DataFrame(matched, columns=["EMPLOYEES"]))
 
 elif mode == "E":
-    st.subheader("Team Exposure (Historical Assignment View)")
+    st.subheader("Team Exposure Timeline (Historical Assignment View)")
 
     # =========================
-    # TEAM DROPDOWN (FIXED)
+    # INPUT
     # =========================
     team_options = sorted(
         prepare_movement(movement)["DESTINATION TEAM/CLIENT"].dropna().unique()
     )
     team_input = st.selectbox("Team / Client Name", team_options)
 
-    start_date = st.date_input("START DATE")
-    end_date = st.date_input("END DATE")
+    # start_date = st.date_input("START DATE")
+    # end_date = st.date_input("END DATE")
 
     window_start = pd.to_datetime(start_date)
     window_end = pd.to_datetime(end_date)
 
-    matched = []
-
     # =========================
     # FIND EMPLOYEES WITH ANY OVERLAP
     # =========================
+    matched = []
+
     for emp in names:
         if not isinstance(emp, str):
             continue
@@ -467,17 +467,19 @@ elif mode == "E":
             continue
 
         emp_movement = prepare_movement(emp_movement)
-        core_df, temp_df = split_core_temp(emp_movement)
 
-        # only rows for selected team
-        temp_rows = temp_df[temp_df["DESTINATION TEAM/CLIENT"] == team_input]
+        team_rows = emp_movement[
+            emp_movement["DESTINATION TEAM/CLIENT"] == team_input
+        ]
 
-        if temp_rows.empty:
+        if team_rows.empty:
             continue
 
-        intervals = build_temp_intervals(temp_rows)
+        # check overlap
+        for _, row in team_rows.iterrows():
+            start = row["START DATE"]
+            end = row["END DATE"]
 
-        for start, end, team in intervals:
             if start <= window_end and end >= window_start:
                 matched.append(emp)
                 break
@@ -485,7 +487,7 @@ elif mode == "E":
     matched = sorted(set(matched))
 
     # =========================
-    # ROLE SPLIT (PL / PA)
+    # SPLIT BY ROLE
     # =========================
     pl_list = []
     pa_list = []
@@ -500,23 +502,50 @@ elif mode == "E":
             pa_list.append(emp)
 
     # =========================
-    # DISPLAY RESULTS
+    # SAME TABLE BUILDING LOGIC AS MODE D
     # =========================
+    def build_table(group):
+        data = {}
+
+        for emp in group:
+            data[emp] = resolve_employee(emp, movement, timeline, holidays, leaves)
+
+        if not data:
+            return None, None
+
+        df = pd.DataFrame(data, index=timeline).T
+        df = df.sort_index()
+
+        all_values = []
+        for row in data.values():
+            all_values.extend(row)
+
+        color_map = generate_color_map(all_values)
+
+        return df, color_map
+
+    # =========================
+    # OUTPUT (IDENTICAL STYLE TO MODE D)
+    # =========================
+    st.subheader(f"Team Exposure Timeline: {team_input}")
+
     if not matched:
         st.warning("No employees found for this team in the selected date range.")
     else:
-        st.success(f"{len(matched)} employees found")
 
         if pl_list:
             st.subheader("PL")
-            st.dataframe(
-                pd.DataFrame(sorted(pl_list), columns=["EMPLOYEES"]),
-                use_container_width=True
-            )
+            df_pl, color_map_pl = build_table(pl_list)
+            if df_pl is not None:
+                render_colored_table(df_pl, color_map_pl)
+                render_legend(color_map_pl)
 
         if pa_list:
             st.subheader("PA")
-            st.dataframe(
-                pd.DataFrame(sorted(pa_list), columns=["EMPLOYEES"]),
-                use_container_width=True
-            )
+            df_pa, color_map_pa = build_table(pa_list)
+            if df_pa is not None:
+                render_colored_table(df_pa, color_map_pa)
+                render_legend(color_map_pa)
+
+        st.subheader("Employees in Team")
+        st.dataframe(pd.DataFrame(sorted(matched), columns=["EMPLOYEES"]))
