@@ -12,7 +12,9 @@ def load_data():
     movement = pd.read_excel(FILE_PATH, sheet_name="MOVEMENT LOG")
     lifecycle = pd.read_excel(FILE_PATH, sheet_name="NEW HIRE_PROMOTION_RESIGNATION")
     resources = pd.read_excel(FILE_PATH, sheet_name="RESOURCES")
-    return movement, lifecycle, resources
+    leaves = pd.read_excel(FILE_PATH, sheet_name="LEAVES")
+
+    return movement, lifecycle, resources, leaves
 
 
 def load_named_range(name):
@@ -63,6 +65,16 @@ def prepare_movement(df):
 
     return df
 
+# =========================
+# PREPARE LEAVES
+# =========================
+def prepare_leaves(df):
+    df = df.copy()
+
+    df["DATE"] = pd.to_datetime(df["DATE"])
+
+    return df
+
 
 # =========================
 # SPLIT CORE / TEMP
@@ -96,11 +108,23 @@ def build_temp_intervals(temp_rows):
 
     return intervals
 
+# =========================
+# CHECK LEAVE
+# =========================
+def is_on_leave(name, date, leaves):
+    leaves = prepare_leaves(leaves)
+
+    emp_leaves = leaves[leaves["NAME"] == name]
+
+    leave_dates = set(emp_leaves["DATE"].dt.date)
+
+    return date.date() in leave_dates
+
 
 # =========================
 # RESOLVE EMPLOYEE TIMELINE
 # =========================
-def resolve_employee(name, movement, timeline):
+def resolve_employee(name, movement, timeline, holidays, leaves):
     movement = prepare_movement(movement)
     core_df, temp_df = split_core_temp(movement)
 
@@ -124,7 +148,21 @@ def resolve_employee(name, movement, timeline):
                 active = team
                 break
 
-        result.append(active if active else core_team)
+                # LEAVE
+        if is_on_leave(name, t, leaves):
+            result.append("LEAVE")
+
+        # WEEKENDS / HOLIDAYS
+        elif t.weekday() >= 5 or t.date() in holidays:
+            result.append("NON-WORK DAY")
+
+        # TEMP ASSIGNMENT
+        elif active:
+            result.append(active)
+
+        # CORE TEAM
+        else:
+            result.append(core_team)
 
     return result
 
@@ -155,27 +193,42 @@ def build_timeline(start_date, end_date):
 # COLORS
 # =========================
 def generate_color_map(values):
+
+    color_map = {
+        "NON-WORK DAY": "#555555",
+        "LEAVE": "#444444",
+        "Blank": "#ffffff"
+    }
+
     palette = [
-        "#dbeafe",  # light blue
-        "#ffedd5",  # light orange
-        "#dcfce7",  # light green
-        "#fee2e2",  # light red
-        "#ede9fe",  # light purple
-        "#f3e8e2",  # light brown
-        "#fce7f3",  # light pink
-        "#e5e7eb",  # light gray
-        "#fef9c3",  # light yellow
-        "#cffafe",  # light cyan
-        "#fde68a",  # soft amber
-        "#ddd6fe",  # lavender
-        "#bfdbfe",  # sky blue
-        "#fecaca",  # rose
-        "#bbf7d0"   # mint
+        "#dbeafe",
+        "#ffedd5",
+        "#dcfce7",
+        "#fee2e2",
+        "#ede9fe",
+        "#f3e8e2",
+        "#fce7f3",
+        "#e5e7eb",
+        "#fef9c3",
+        "#cffafe",
+        "#fde68a",
+        "#ddd6fe",
+        "#bfdbfe",
+        "#fecaca",
+        "#bbf7d0"
     ]
 
     unique = sorted(set(values))
 
-    return {v: palette[i % len(palette)] for i, v in enumerate(unique)}
+    team_values = [
+        v for v in unique
+        if v not in color_map
+    ]
+
+    for i, v in enumerate(team_values):
+        color_map[v] = palette[i % len(palette)]
+
+    return color_map
 
 
 # =========================
@@ -203,7 +256,12 @@ def render_colored_table(df, color_map):
         for val in row:
             val = clean_team(val)
             color = color_map.get(val, "#ffffff")
-            html += f"<td style='background-color:{color}'>{val}</td>"
+            text_color = "white" if val in ["LEAVE", "NON-WORK DAY"] else "black"
+
+            html += (
+            f"<td style='background-color:{color};color:{text_color}'>"
+            f"{val}</td>"
+            )
 
         html += "</tr>"
 
@@ -230,12 +288,12 @@ def render_legend(color_map):
 # =========================
 # MAIN APP
 # =========================
-movement, lifecycle, resources = load_data()
+movement, lifecycle, resources, leaves = load_data()
 names, holidays = load_lists()
 
 st.title("Workforce Timeline System")
 
-mode = st.selectbox("Mode", ["EMPLOYEE", "CORE TEAM/CLIENT"])
+mode = st.selectbox("Mode", ["A", "D"])
 
 start_date = st.date_input("START DATE")
 end_date = st.date_input("END DATE")
@@ -245,7 +303,7 @@ timeline = build_timeline(start_date, end_date)
 # =========================
 # MODE A: EMPLOYEE VIEW
 # =========================
-if mode == "EMPLOYEE":
+if mode == "A":
     name_input = st.text_input("Employee Search")
 
     matched = [
@@ -256,7 +314,7 @@ if mode == "EMPLOYEE":
     data = {}
 
     for emp in matched:
-        data[emp] = resolve_employee(emp, movement, timeline)
+        data[emp] = resolve_employee(emp, movement, timeline, holidays, leaves)
 
     if data:
         df = pd.DataFrame(data, index=timeline).T
@@ -272,9 +330,9 @@ if mode == "EMPLOYEE":
         render_legend(color_map)
 
 # =========================
-# MODE B: TEAM → EMPLOYEES
+# MODE D: TEAM → EMPLOYEES
 # =========================
-elif mode == "CORE TEAM/CLIENT":
+elif mode == "D":
     team_input = st.text_input("Team / Client Name")
 
     if team_input:
@@ -323,7 +381,7 @@ elif mode == "CORE TEAM/CLIENT":
                 data = {}
 
                 for emp in group:
-                    data[emp] = resolve_employee(emp, movement, timeline)
+                    data[emp] = resolve_employee(emp, movement, timeline, holidays, leaves)
 
                 if not data:
                     return None, None
